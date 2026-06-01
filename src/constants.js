@@ -150,6 +150,7 @@ export const colors = {
 	loading: '#e22214',
 	accessible: '#1871BD', // Optimistic Blue
 	unusableImage: '#a5a3a3', // Red
+	estimated: '#d4a017', // amber — matches the side-panel "estimated" banner
 	loadingIconFill: 'hsl(359, 95%, 75%)',
 	loadingIconStroke: 'hsl(0, 0%, 20%)',
 	accessibleIconFill: 'hsl(197, 71%, 73%)',

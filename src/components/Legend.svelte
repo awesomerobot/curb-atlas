@@ -7,6 +7,7 @@
 	import YesParking from '../icons/legend/YesParking.svelte';
 	import YesParkingLight from '../icons/legend/YesParkingLight.svelte';
 	import UnusableImage from '../icons/legend/UnusableImage.svelte';
+	import Estimated from '../icons/legend/Estimated.svelte';
 	import { simplifyFilters } from '../utils/basic-utils';
 
 	const filterValues = $derived(simplifyFilters(filterState.current));
@@ -61,6 +62,12 @@
 		<div class="legend-text">Unusable Image:</div>
 		<div class="legend-icon">
 			<UnusableImage />
+		</div>
+	</div>
+	<div class="legend-item">
+		<div class="legend-text">Estimated from posted signage:</div>
+		<div class="legend-icon">
+			<Estimated />
 		</div>
 	</div>
 </div>
