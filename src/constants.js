@@ -5,6 +5,11 @@ export const curbApiUrl = 'https://smart-curb-api-726931983438.us-east4.run.app'
 
 export const CURB_ZONE_MINZOOM = 13;
 
+// Above this zoom, the map auto-fetches curb zones for whatever's in view
+// (no need to draw a rectangle). At lower zooms the viewport spans too much
+// of the city to fetch responsively, so users still get the "zoom in" prompt.
+export const AUTO_LOAD_MINZOOM = 14;
+
 export const TIMEOUT = 250;
 
 // Boston bounds
@@ -116,7 +121,6 @@ export const timeOptions = [
 export const dasharrays = {
 	curbZoneDasharray: [1, 0], // solid line
 	notAllowedCurbZoneDasharray: [0.5, 2], // dotted line
-	areaSelectionDasharray: [2, 2],
 	unusableImageDasharray: [0.5, 2], // red dashed line
 };
 
@@ -127,8 +131,7 @@ export const widths = {
 	selectedCurbZoneStroke: 8,
 	selectedCurbZoneWidth: 4,
 	curbZoneEmphasisOutline: 12,
-	curbZoneEmphasisWidth: 8,
-	areaSelectionOutline: 2
+	curbZoneEmphasisWidth: 8
 };
 
 export const colors = {
