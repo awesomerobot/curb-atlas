@@ -3,7 +3,7 @@
 	import { calendarizePolicies } from '../utils/calendarize-policies';
 	import Calendar from './Calendar.svelte';
 
-	const { curbZoneId, policies } = $props();
+	const { curbZoneId, policies, estimated = false } = $props();
 
 	let highlightedPolicyId = $state(null);
 
@@ -50,6 +50,15 @@
 <div class="Policies">
 	<div class="title">Policies</div>
 
+	{#if estimated}
+		<div class="estimated-banner">
+			Estimated from posted signage — the city's curb-zone pipeline could not
+			classify this segment, so policies below are derived from nearby sign
+			codes (BTD Sign Code Guide). Verify against the photos under "Posted
+			signage."
+		</div>
+	{/if}
+
 	<ul class="policies-list-container">
 		{#each sortedPolicies as policy}
 			<li id={policy?.curb_policy_id}>
@@ -58,6 +67,7 @@
 						class={['policy-text', { highlighted: highlightedPolicyId === policy?.curb_policy_id }]}
 					>
 						{policy?.description ?? 'No policy description provided.'}
+						{#if policy?.derived}<span class="derived-tag">estimated</span>{/if}
 					</div>
 					<div class="last-updated">
 						Last updated {getLastUpdatedString(policy?.published_date)}
@@ -105,6 +115,29 @@
 		&.highlighted {
 			color: var(--optimistic-blue);
 		}
+	}
+
+	.estimated-banner {
+		font-size: var(--font-size-s);
+		font-style: italic;
+		color: var(--charles-blue);
+		background: rgba(255, 200, 0, 0.18);
+		border-left: 3px solid #d4a017;
+		padding: 0.5rem 0.75rem;
+		border-radius: 4px;
+	}
+
+	.derived-tag {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0 0.3rem;
+		font-size: 0.65rem;
+		font-weight: var(--font-weight-bold);
+		text-transform: uppercase;
+		color: #6b4d00;
+		background: rgba(255, 200, 0, 0.4);
+		border-radius: 2px;
+		vertical-align: middle;
 	}
 
 	.last-updated {

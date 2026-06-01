@@ -1,16 +1,34 @@
 <script>
-	import { selectedCurbZoneState } from '../state.svelte';
+	import { selectedCurbZoneState, signsState } from '../state.svelte';
 	import Policies from './Policies.svelte';
+	import PostedSignage from './PostedSignage.svelte';
 	import StreetViewButton from './StreetViewButton.svelte';
 	import AdditionalInfo from './AdditionalInfo.svelte';
 	import LinkOut from '../icons/LinkOut.svelte';
 	import length from '@turf/length';
 	import along from '@turf/along';
 
-	const policies = $derived(selectedCurbZoneState.policies);
+	const realPolicies = $derived(selectedCurbZoneState.policies);
 	const geometry = $derived(selectedCurbZoneState.geometry);
 	const properties = $derived(selectedCurbZoneState.properties);
 	let curbZoneId = $derived(properties?.curb_zone_id);
+
+	const nearbySigns = $derived(
+		curbZoneId ? signsState.byZoneId.get(curbZoneId) || [] : []
+	);
+
+	// `properties.onlyUnusable` is precomputed in determine-parking-validity so
+	// the map paint expression and this fallback agree exactly. (If a zone has
+	// no policies at all, that's also "no real data" → fall back to derived.)
+	const onlyUnusable = $derived(
+		properties?.onlyUnusable ?? (!realPolicies || !realPolicies.length)
+	);
+
+	const derivedPolicies = $derived(nearbySigns.map((s) => s.properties.policy).filter(Boolean));
+
+	const policies = $derived(
+		onlyUnusable && derivedPolicies.length ? derivedPolicies : realPolicies
+	);
 
 	let activeTab = $state('policies');
 
@@ -47,15 +65,23 @@
 			class={['panel-button', { active: activeTab === 'additional_info' }]}
 			onclick={() => (activeTab = 'additional_info')}>Additional info</button
 		>
+		{#if nearbySigns.length}
+			<button
+				class={['panel-button', { active: activeTab === 'signage' }]}
+				onclick={() => (activeTab = 'signage')}>Posted signage ({nearbySigns.length})</button
+			>
+		{/if}
 
 		<a class="panel-button streetview" href={streetViewUrl} target="_blank"
 			>Street view <div class="link-out-icon"><LinkOut /></div></a
 		>
 	</div>
 	{#if activeTab === 'policies'}
-		<Policies {policies} {curbZoneId} />
-	{:else}
+		<Policies {policies} {curbZoneId} estimated={onlyUnusable && derivedPolicies.length > 0} />
+	{:else if activeTab === 'additional_info'}
 		<AdditionalInfo {properties} />
+	{:else if activeTab === 'signage'}
+		<PostedSignage signs={nearbySigns} />
 	{/if}
 </div>
 
