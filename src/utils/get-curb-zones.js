@@ -2,7 +2,23 @@ import { fetchUrl } from './fetch';
 import { curbApiUrl } from '../constants';
 import { determineParkingValidity } from './determine-parking-validity';
 import { getCurbPoliciesById } from './get-curb-policies-by-id';
-import { loadingState } from '../state.svelte';
+import { loadingState, signsState } from '../state.svelte';
+import { loadSigns, joinSignsToZones } from './signs-loader';
+
+// Fire-and-forget: after a curb-zone fetch resolves, lazy-load
+// signs.geojson and publish the per-zone join. Surfaces "estimated from
+// sign inventory" data in the side panel for zones the city pipeline
+// couldn't classify.
+const refreshSignsJoin = async (zoneCollection) => {
+	if (!zoneCollection) return;
+	try {
+		const cache = await loadSigns();
+		signsState.byZoneId = joinSignsToZones(cache, zoneCollection);
+		signsState.photoUrlPrefix = cache.photoUrlPrefix;
+	} catch (err) {
+		console.warn('signs join failed:', err.message);
+	}
+};
 
 const transformData = async (data, policies, day, time) => {
 	if (!data.data) return null;
@@ -54,6 +70,8 @@ const getCurbZonesByArea = async (min_lng, min_lat, max_lng, max_lat, day, time)
 
 	loadingState.loading = false;
 
+	refreshSignsJoin(transformedResult);
+
 	return transformedResult;
 };
 
@@ -103,6 +121,8 @@ const getCurbZonesByRadius = async (lng, lat, radius, day, time) => {
 	const transformedResult = await transformData(resultData);
 
 	loadingState.loading = false;
+
+	refreshSignsJoin(transformedResult);
 
 	return transformedResult;
 };

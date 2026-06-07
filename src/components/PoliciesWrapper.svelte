@@ -1,6 +1,7 @@
 <script>
-	import { selectedCurbZoneState } from '../state.svelte';
+	import { selectedCurbZoneState, signsState } from '../state.svelte';
 	import Policies from './Policies.svelte';
+	import PostedSignage from './PostedSignage.svelte';
 	import StreetViewButton from './StreetViewButton.svelte';
 	import AdditionalInfo from './AdditionalInfo.svelte';
 	import LinkOut from '../icons/LinkOut.svelte';
@@ -12,17 +13,35 @@
 	const properties = $derived(selectedCurbZoneState.properties);
 	let curbZoneId = $derived(properties?.curb_zone_id);
 
-	// When the zone has real policies alongside the unusable-image sentinel,
-	// the sentinel adds no information — hide it so the panel stays clean.
-	// But if the sentinel is the *only* policy (true gray segment, no signs),
-	// keep it so the user sees something instead of an empty list.
-	const policies = $derived.by(() => {
+	const nearbySigns = $derived(
+		curbZoneId ? signsState.byZoneId.get(curbZoneId) || [] : []
+	);
+
+	// `properties.unusableImage` is set by upstream's post-loop logic only
+	// when every policy on the zone is the sentinel — same semantic the map
+	// paint uses. Treat "no policies at all" as the same case so the derived
+	// fallback still kicks in there.
+	const hasNoRealData = $derived(
+		properties?.unusableImage || !realPolicies?.length
+	);
+
+	const derivedPolicies = $derived(nearbySigns.map((s) => s.properties.policy).filter(Boolean));
+
+	// When real policies coexist with the unusable-image sentinel, hide the
+	// sentinel — it adds no info next to real policies, and the dashed line
+	// on the map already conveys data quality. Keep it when it's the only
+	// policy so the list isn't empty.
+	const filteredRealPolicies = $derived.by(() => {
 		if (!realPolicies?.length) return realPolicies;
 		const nonSentinel = realPolicies.filter((p) =>
 			(p.rules || []).some((r) => r?.activity !== 'unusable image')
 		);
 		return nonSentinel.length ? nonSentinel : realPolicies;
 	});
+
+	const policies = $derived(
+		hasNoRealData && derivedPolicies.length ? derivedPolicies : filteredRealPolicies
+	);
 
 	let activeTab = $state('policies');
 
@@ -59,15 +78,23 @@
 			class={['panel-button', { active: activeTab === 'additional_info' }]}
 			onclick={() => (activeTab = 'additional_info')}>Additional info</button
 		>
+		{#if nearbySigns.length}
+			<button
+				class={['panel-button', { active: activeTab === 'signage' }]}
+				onclick={() => (activeTab = 'signage')}>Posted signage ({nearbySigns.length})</button
+			>
+		{/if}
 
 		<a class="panel-button streetview" href={streetViewUrl} target="_blank"
 			>Street view <div class="link-out-icon"><LinkOut /></div></a
 		>
 	</div>
 	{#if activeTab === 'policies'}
-		<Policies {policies} {curbZoneId} />
-	{:else}
+		<Policies {policies} {curbZoneId} estimated={hasNoRealData && derivedPolicies.length > 0} />
+	{:else if activeTab === 'additional_info'}
 		<AdditionalInfo {properties} />
+	{:else if activeTab === 'signage'}
+		<PostedSignage signs={nearbySigns} />
 	{/if}
 </div>
 

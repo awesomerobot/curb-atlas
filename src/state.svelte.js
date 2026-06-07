@@ -43,3 +43,12 @@ export let timeState = $state({
 export let loadingState = $state({
 	loading: false
 });
+
+// Map of curb_zone_id → array of sign features (with .properties.policy =
+// CDS-shaped derived policy). Populated by get-curb-zones after each
+// area/radius fetch; consumed by PoliciesWrapper/Policies for the
+// "estimated from sign inventory" fallback on zones with no real data.
+export let signsState = $state({
+	byZoneId: new Map(),
+	photoUrlPrefix: ''
+});

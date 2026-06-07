@@ -11,7 +11,8 @@
 		selectedAreaState,
 		selectedCurbZoneState,
 		timeState,
-		filterState
+		filterState,
+		signsState
 	} from '../state.svelte';
 	import MapboxDraw from '@mapbox/mapbox-gl-draw';
 	import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
@@ -189,6 +190,16 @@
 		}
 	};
 
+	// A zone is "estimated" when the city pipeline has *no* real data for it
+	// (upstream's post-loop logic only sets unusableImage when every policy is
+	// the sentinel) AND we have signage data joined to it from the inventory.
+	// Amber on the map ⇒ "the policies you'll see are derived from signage."
+	const isEstimatedExpr = [
+		'all',
+		['to-boolean', ['get', 'unusableImage']],
+		['to-boolean', ['get', 'hasDerivedSignage']]
+	];
+
 	const parkingLineWidthExpression = $derived.by(() => {
 		const { paid, permitted } = filters;
 
@@ -212,7 +223,7 @@
 		return [
 			'case',
 			['to-boolean', ['get', 'unusableImage']],
-			dasharrays.unusableImageDasharray, // red dashed line
+			dasharrays.unusableImageDasharray, // gray dashed line (estimated uses same dash, differs only in color)
 			condition,
 			dasharrays.curbZoneDasharray, // solid line
 			dasharrays.notAllowedCurbZoneDasharray // dotted line
@@ -253,6 +264,8 @@
 
 		return [
 			'case',
+			isEstimatedExpr,
+			colors.estimated,
 			['to-boolean', ['get', 'unusableImage']],
 			colors.unusableImage,
 			['boolean', ['feature-state', 'hover'], false],
@@ -866,6 +879,26 @@
 			// But we receive large enough JSONs that it slows the app more to store it
 			addCurbZonesLayers(selectedAreaType, timeState.day, timeState.time);
 		}
+	});
+
+	// When the sign-inventory join finishes, stamp `hasDerivedSignage` on the
+	// matching curb-zone features and re-setData so the paint expressions
+	// re-evaluate. Without this the map can't tell which gray-dashed segments
+	// have estimated data behind them.
+	$effect(() => {
+		const byZoneId = signsState.byZoneId;
+		const source = mapState.map?.getSource?.(CURB_ZONES_SOURCE_ID);
+		if (!source || !byZoneId?.size) return;
+		const data = source._data;
+		if (!data?.features) return;
+		let changed = false;
+		const nextFeatures = data.features.map((f) => {
+			const has = byZoneId.has(f.properties?.curb_zone_id);
+			if (!!f.properties?.hasDerivedSignage === has) return f;
+			changed = true;
+			return { ...f, properties: { ...f.properties, hasDerivedSignage: has } };
+		});
+		if (changed) source.setData({ ...data, features: nextFeatures });
 	});
 
 	// filters
