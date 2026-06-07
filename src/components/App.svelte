@@ -65,24 +65,11 @@
 		if (hashObj?.selectedCurbZone) {
 			selectedCurbZoneState.id = hashObj?.selectedCurbZone;
 		}
-		if (hashObj?.selectedArea) {
-			let { type } = hashObj?.selectedArea;
-			selectedAreaState.type = type;
-			switch (type) {
-				case 'area': {
-					const bbox = hashObj?.selectedArea?.bbox;
-					const polygon = bboxPolygon(bbox);
-					selectedAreaState.selected = polygon;
-					break;
-				}
-				case 'radius': {
-					selectedAreaState.radius = hashObj?.selectedArea?.radius;
-					break;
-				}
-				default: {
-					break;
-				}
-			}
+		if (hashObj?.selectedArea?.bbox) {
+			// Backwards-compat for previously shared URLs. The viewport sync in
+			// Map.svelte overrides this on the first moveend anyway.
+			selectedAreaState.type = 'area';
+			selectedAreaState.selected = bboxPolygon(hashObj.selectedArea.bbox);
 		}
 		if (hashObj?.position) {
 			mapState.position = hashObj?.position;

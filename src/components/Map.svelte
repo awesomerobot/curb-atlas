@@ -3,7 +3,7 @@
 	import throttle from 'lodash.throttle';
 	import mapboxgl from 'mapbox-gl';
 	import 'mapbox-gl/dist/mapbox-gl.css';
-	import { mapboxAccessToken, maxBounds, dasharrays, widths, colors, CURB_ZONE_MINZOOM, TIMEOUT } from '../constants';
+	import { mapboxAccessToken, maxBounds, dasharrays, widths, colors, CURB_ZONE_MINZOOM, AUTO_LOAD_MINZOOM, TIMEOUT } from '../constants';
 	import { simplifyFilters } from '../utils/basic-utils';
 	import {
 		geocoderState,
@@ -14,83 +14,10 @@
 		filterState,
 		signsState
 	} from '../state.svelte';
-	import MapboxDraw from '@mapbox/mapbox-gl-draw';
-	import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
-	import DrawRectangle from 'mapbox-gl-draw-rectangle-mode';
-	import { getCurbZonesByArea, getCurbZonesByRadius } from '../utils/get-curb-zones';
+	import { getCurbZonesByArea } from '../utils/get-curb-zones';
 	import { getCurbPoliciesById } from '../utils/get-curb-policies-by-id';
 	import NoZonesModal from './NoZonesModal.svelte';
 	import * as turf from '@turf/turf';
-
-	// ------------------------------------------------------------
-	// Custom draw mode allowing the drag functionality
-	const DragRectangleMode = {
-		onSetup() {
-			return {
-				start: null,
-				rectangle: null
-			};
-		},
-
-		onMouseDown(state, e) {
-			state.start = e.lngLat;
-
-			state.rectangle = this.newFeature({
-				type: 'Feature',
-				properties: {},
-				geometry: {
-					type: 'Polygon',
-					coordinates: [
-						[
-							[0, 0],
-							[0, 0],
-							[0, 0],
-							[0, 0],
-							[0, 0]
-						]
-					]
-				}
-			});
-
-			this.addFeature(state.rectangle);
-		},
-
-		onDrag(state, e) {
-			if (!state.start || !state.rectangle) return;
-
-			const start = state.start;
-			const end = e.lngLat;
-
-			if (!end) return;
-
-			const bbox = [
-				[start.lng, start.lat],
-				[end.lng, start.lat],
-				[end.lng, end.lat],
-				[start.lng, end.lat],
-				[start.lng, start.lat]
-			];
-
-			if (bbox.some((coord) => coord.includes(undefined))) return;
-
-			state.rectangle.setCoordinates([bbox]);
-		},
-
-		onMouseUp(state) {
-			if (!state.rectangle) return;
-
-			this.map.fire('draw.create', {
-				features: [state.rectangle.toGeoJSON()]
-			});
-
-			this.changeMode('simple_select');
-		},
-
-		toDisplayFeatures(state, geojson, display) {
-			display(geojson);
-		}
-	};
-	// ------------------------------------------------------------
 
 	let showNoZoneWarning = $state(false);
 
@@ -407,28 +334,54 @@
 			})
 		);
 
-		const modes = MapboxDraw.modes;
-
-		modes.draw_rectangle = DrawRectangle;
-
-		modes.draw_drag_rectangle = DragRectangleMode;
-
-		mapState.draw = new MapboxDraw({ modes });
-
-		mapState.map.addControl(mapState.draw, 'top-left');
-
 		mapState.map.on('move', throttledSetPositionState);
+
+		// Auto-load curb zones for whatever's currently in view (above AUTO_LOAD_MINZOOM).
+		// Drop the existing selection when the user zooms back out so the cleanup
+		// effect tears down the layers and the "zoom in" prompt shows clean.
+		const syncViewportSelection = () => {
+			const zoom = mapState.map.getZoom();
+			if (zoom < AUTO_LOAD_MINZOOM) {
+				if (selectedAreaState.selected) {
+					selectedAreaState.selected = null;
+					selectedAreaState.type = null;
+					selectedAreaState.isViewport = false;
+				}
+				return;
+			}
+			const b = mapState.map.getBounds();
+			const sw = b.getSouthWest();
+			const ne = b.getNorthEast();
+			const polygon = {
+				type: 'Feature',
+				properties: {},
+				geometry: {
+					type: 'Polygon',
+					coordinates: [[
+						[sw.lng, sw.lat],
+						[ne.lng, sw.lat],
+						[ne.lng, ne.lat],
+						[sw.lng, ne.lat],
+						[sw.lng, sw.lat]
+					]]
+				}
+			};
+			selectedAreaState.isViewport = true;
+			selectedAreaState.type = 'area';
+			selectedAreaState.selected = polygon;
+		};
+
+		mapState.map.on('moveend', syncViewportSelection);
 
 		mapState.map.on('load', () => {
 			mapState.map.dragRotate.disable();
 			mapState.map.touchZoomRotate.disableRotation();
 			mapState.map.touchPitch.disable();
 			mapState.map.keyboard.disable();
+			// Initial fire so users who land at a zoomed-in view get data immediately.
+			syncViewportSelection();
 		});
 	});
-
-	const SELECTED_SOURCE_ID = '_selectedarea';
-	const SELECTED_LAYER_ID = '_selectedarea_outline';
 
 	const CURB_ZONES_SOURCE_ID = '_curbzones';
 	const CURB_ZONES_LAYER_ID = '_curb_zones_layer';
@@ -611,11 +564,6 @@
 					}
 				);
 			fetchFn = () => getCurbZonesByArea(min_lng, min_lat, max_lng, max_lat, day, time);
-		} else if (type === 'radius') {
-			const [lng, lat] = geocoderState.results;
-			const radius = selectedAreaState.radius * 160934.4;
-
-			fetchFn = () => getCurbZonesByRadius(lng, lat, radius, day, time);
 		}
 
 		if (!fetchFn) return;
@@ -782,87 +730,15 @@
 		}
 	};
 
-	// REACT TO CHANGING STATES
-	// type = area
+	// React to viewport-driven selection changes by refetching curb zones.
 	$effect(() => {
 		selectedAreaState.type;
 		selectedAreaState.selected;
-		// Triggers placed above because using this fn stops reactivity
 		const fn = () => {
-			const existingSource = mapState.map.getSource(SELECTED_SOURCE_ID);
-			if (!!selectedAreaState.selected && selectedAreaState.type === 'area' && !existingSource) {
-				const geojson = selectedAreaState.selected;
-
-				const nextSource = {
-					type: 'geojson',
-					data: geojson
-				};
-
-				mapState.map.addSource(SELECTED_SOURCE_ID, nextSource);
-
-				const nextLayer = {
-					id: SELECTED_LAYER_ID,
-					type: 'line',
-					source: SELECTED_SOURCE_ID,
-					layout: {},
-					paint: {
-						'line-color': '#58585b',
-						'line-width': widths.areaSelectionOutline,
-						'line-dasharray': dasharrays.areaSelectionDasharray
-					}
-				};
-
-				mapState.map.addLayer(nextLayer);
-
-				const day = untrack(() => timeState.day);
-				const time = untrack(() => timeState.time);
-				addCurbZonesLayers('area', day, time);
-			}
-		};
-
-		waitForStyleLoad(mapState.map, fn);
-	});
-
-	// type = radius
-	$effect(() => {
-		selectedAreaState.type;
-		selectedAreaState.selected;
-		// Triggers placed above because using this fn stops reactivity
-		const fn = () => {
-			// Add layer
-			const existingSource = mapState.map.getSource(SELECTED_SOURCE_ID);
-			if (!!selectedAreaState.selected && selectedAreaState.type === 'radius') {
-				const geojson = selectedAreaState.selected;
-
-				if (!existingSource) {
-					const nextSource = {
-						type: 'geojson',
-						data: geojson
-					};
-
-					mapState.map.addSource(SELECTED_SOURCE_ID, nextSource);
-
-					const nextLayer = {
-						id: SELECTED_LAYER_ID,
-						type: 'line',
-						source: SELECTED_SOURCE_ID,
-						layout: {},
-						paint: {
-							'line-color': '#58585b',
-							'line-width': widths.areaSelectionOutline,
-							'line-dasharray': [2, 2]
-						}
-					};
-
-					mapState.map.addLayer(nextLayer);
-				} else {
-					existingSource.setData(geojson);
-				}
-
-				const day = untrack(() => timeState.day);
-				const time = untrack(() => timeState.time);
-				addCurbZonesLayers('radius', day, time);
-			}
+			if (!selectedAreaState.selected || selectedAreaState.type !== 'area') return;
+			const day = untrack(() => timeState.day);
+			const time = untrack(() => timeState.time);
+			addCurbZonesLayers('area', day, time);
 		};
 
 		waitForStyleLoad(mapState.map, fn);
@@ -932,13 +808,11 @@
 		}
 	});
 
-	// Remove layer
+	// Tear down curb-zone layers when the selection is cleared (zoom drop below
+	// AUTO_LOAD_MINZOOM is the only way that happens now).
 	$effect(() => {
 		const hasSelection = selectedAreaState.selected;
 		if (mapState.map.isStyleLoaded() && !hasSelection) {
-			mapState.map.removeLayer(SELECTED_LAYER_ID);
-			mapState.map.removeSource(SELECTED_SOURCE_ID);
-
 			// Remove curb zones
 			if (mapState.map.getLayer(CURB_ZONES_LAYER_ID)) {
 				mapState.map.removeLayer(CURB_ZONES_LAYER_ID);
