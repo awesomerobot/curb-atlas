@@ -17,17 +17,18 @@
 		curbZoneId ? signsState.byZoneId.get(curbZoneId) || [] : []
 	);
 
-	// `properties.onlyUnusable` is precomputed in determine-parking-validity so
-	// the map paint expression and this fallback agree exactly. (If a zone has
-	// no policies at all, that's also "no real data" → fall back to derived.)
-	const onlyUnusable = $derived(
-		properties?.onlyUnusable ?? (!realPolicies || !realPolicies.length)
+	// `properties.unusableImage` is set by upstream's post-loop logic only
+	// when every policy on the zone is the sentinel — same semantic the map
+	// paint uses, so the panel and map stay in sync. Treat "no policies at
+	// all" as the same case so the derived fallback still kicks in there.
+	const hasNoRealData = $derived(
+		properties?.unusableImage || !realPolicies?.length
 	);
 
 	const derivedPolicies = $derived(nearbySigns.map((s) => s.properties.policy).filter(Boolean));
 
 	const policies = $derived(
-		onlyUnusable && derivedPolicies.length ? derivedPolicies : realPolicies
+		hasNoRealData && derivedPolicies.length ? derivedPolicies : realPolicies
 	);
 
 	let activeTab = $state('policies');
@@ -77,7 +78,7 @@
 		>
 	</div>
 	{#if activeTab === 'policies'}
-		<Policies {policies} {curbZoneId} estimated={onlyUnusable && derivedPolicies.length > 0} />
+		<Policies {policies} {curbZoneId} estimated={hasNoRealData && derivedPolicies.length > 0} />
 	{:else if activeTab === 'additional_info'}
 		<AdditionalInfo {properties} />
 	{:else if activeTab === 'signage'}

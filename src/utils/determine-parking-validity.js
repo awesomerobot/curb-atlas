@@ -13,23 +13,10 @@ const determineParkingValidity = async (policies, zoneProperties, day, time) => 
 		accessible: false,
 		loadingZone: false,
 		unusableImage: false,
-		// True when every rule on every policy is "unusable image" — i.e. the
-		// city has no real regulation data, only the sentinel. Used by the map
-		// and side panel to fall back to derived rules from the sign inventory.
-		onlyUnusable: false,
 		// maxStay in minutes
 		maxStay: null,
 		paid: false
 	};
-
-	// Compute onlyUnusable up front from the raw input so we don't have to
-	// thread the check through the per-timespan loop below.
-	const validPolicies = policies.filter(Boolean);
-	properties.onlyUnusable =
-		validPolicies.length > 0 &&
-		validPolicies.every((p) =>
-			(p.rules || []).every((r) => r?.activity === 'unusable image')
-		);
 
 	// Sort by priority order
 	const sortedPolicies = policies.sort((a, b) => a.priority - b.priority);

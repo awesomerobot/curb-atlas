@@ -190,14 +190,13 @@
 		}
 	};
 
-	// A zone is "estimated" only when the city pipeline has *no* real data for
-	// it (every policy is the unusable-image sentinel) AND we have signage data
-	// joined to it from the inventory. Matches the side-panel's onlyUnusable
-	// check so the map and panel stay in sync: amber on the map ⇒ "policies you
-	// see are derived from sign inventory."
+	// A zone is "estimated" when the city pipeline has *no* real data for it
+	// (upstream's post-loop logic only sets unusableImage when every policy is
+	// the sentinel) AND we have signage data joined to it from the inventory.
+	// Amber on the map ⇒ "the policies you'll see are derived from signage."
 	const isEstimatedExpr = [
 		'all',
-		['to-boolean', ['get', 'onlyUnusable']],
+		['to-boolean', ['get', 'unusableImage']],
 		['to-boolean', ['get', 'hasDerivedSignage']]
 	];
 
@@ -208,7 +207,7 @@
 
 		return [
 			'case',
-			['to-boolean', ['get', 'onlyUnusable']],
+			['to-boolean', ['get', 'unusableImage']],
 			widths.unusableCurbZoneWidth,
 			condition,
 			widths.curbZoneWidth,
@@ -223,7 +222,7 @@
 
 		return [
 			'case',
-			['to-boolean', ['get', 'onlyUnusable']],
+			['to-boolean', ['get', 'unusableImage']],
 			dasharrays.unusableImageDasharray, // gray dashed line (estimated uses same dash, differs only in color)
 			condition,
 			dasharrays.curbZoneDasharray, // solid line
@@ -267,7 +266,7 @@
 			'case',
 			isEstimatedExpr,
 			colors.estimated,
-			['to-boolean', ['get', 'onlyUnusable']],
+			['to-boolean', ['get', 'unusableImage']],
 			colors.unusableImage,
 			['boolean', ['feature-state', 'hover'], false],
 			colors.hoverHighlightColor,
