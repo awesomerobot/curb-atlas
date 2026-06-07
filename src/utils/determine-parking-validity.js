@@ -4,27 +4,50 @@ const determineParkingValidity = async (policies, zoneProperties, day, time) => 
 	let { curb_policy_ids, curb_zone_id } = zoneProperties;
 	curb_policy_ids = curb_policy_ids.filter(Boolean);
 
-	if (!curb_policy_ids || !curb_policy_ids.length) return { zoneProperties };
+	// Upstream returned `{ zoneProperties }` (object wrapper) here, which lost
+	// the top-level fields — including curb_zone_id — for any zone with no
+	// policies. Return the properties directly so the feature is identifiable
+	// downstream and renders correctly.
+	if (!curb_policy_ids || !curb_policy_ids.length) return { ...zoneProperties };
 
 	const properties = {
 		zoneId: curb_zone_id,
+		// canPark = freely parkable right now for a regular car (no permit
+		// or payment needed). The map filter then optionally widens that to
+		// include permit-only or paid zones via the checkboxes.
 		canPark: false,
+		// permitted / paid are zone-level "has this characteristic anywhere"
+		// flags, NOT gated on right-now activity. Each filter checkbox adds
+		// zones whose flag is set, regardless of canPark.
 		permitted: false,
 		accessible: false,
 		loadingZone: false,
 		unusableImage: false,
-		// maxStay in minutes
 		maxStay: null,
 		paid: false
 	};
 
-	// Time-limited "no parking" / "no stopping" rules ("Tue 12pm-4pm")
-	// implicitly allow parking outside their window. The main loop below only
-	// flips canPark via positive "parking" rules, so a zone whose only policy
-	// is a time-limited restriction would always show as red. Track whether
-	// any restriction is firing right now; if none is, fall back to allowed.
-	let hasTimeLimitedRestriction = false;
-	let restrictionActiveNow = false;
+	// Pre-scan: flag permitted/paid based on any rule that indicates them,
+	// across all the zone's policies (not just active-now ones).
+	const permitDescRe = /permit|resident only|residents only|hp\/dv|disabled veteran/;
+	for (const policy of policies.filter(Boolean)) {
+		if ((policy.rates || []).length) properties.paid = true;
+		const desc = (policy.description || '').toLowerCase();
+		if (permitDescRe.test(desc)) properties.permitted = true;
+		for (const r of (policy.rules || [])) {
+			const uc = r?.user_classes || [];
+			const purp = r?.purposes || [];
+			if (uc.some((v) => /permit/i.test(v))) properties.permitted = true;
+			if (purp.some((v) => ['permit', 'disabled_parking_permit'].includes(v))) {
+				properties.permitted = true;
+			}
+		}
+	}
+
+	// canPark tracking — does the zone's regulation actually let a regular
+	// car park right now?
+	let hasTimeLimitedRule = false;
+	let anyRuleActiveNow = false;
 
 	// Sort by priority order
 	const sortedPolicies = policies.sort((a, b) => a.priority - b.priority);
@@ -34,6 +57,12 @@ const determineParkingValidity = async (policies, zoneProperties, day, time) => 
 
 		rules = Array.isArray(rules) ? rules.filter(Boolean) : [];
 		time_spans = Array.isArray(time_spans) ? time_spans.filter(Boolean) : [];
+		// Boston tags permit/HP-DV-only zones as activity="no parking" with the
+		// permit nuance only in the description text. Detect those so we treat
+		// the rule as permit-allowed parking instead of a flat ban.
+		const description = (policy?.description || '').toLowerCase();
+		const isPermitDescription =
+			/permit|resident only|residents only|hp\/dv|disabled veteran/.test(description);
 
 		for (const rule of rules) {
 			let {
@@ -41,8 +70,7 @@ const determineParkingValidity = async (policies, zoneProperties, day, time) => 
 				purposes = [],
 				user_classes = [],
 				max_stay,
-				max_stay_unit,
-				rate = null
+				max_stay_unit
 			} = rule ?? {};
 
 			// Gross data fixing
@@ -73,106 +101,81 @@ const determineParkingValidity = async (policies, zoneProperties, day, time) => 
 
 				const isParking = !!activity && activity === 'parking';
 
+				const dayApplies = !days_of_week || days_of_week.includes(day);
+				const timeApplies =
+					time_of_day_start === null ||
+					time_of_day_start === time_of_day_end ||
+					(time >= time_of_day_start && time <= time_of_day_end);
+				const ruleApplies = dayApplies && timeApplies;
+				const isTimeLimited =
+					!!days_of_week ||
+					(time_of_day_start !== null && time_of_day_start !== time_of_day_end);
+
 				// POSITIVE
 				// Check for basic parking eligibility
 				if (isParking) {
-					properties.canPark = true;
-					// Check for permitting
-					if (
-						purposes &&
-						Array.isArray(purposes) &&
-						purposes.some((v) => ['permit', 'disabled_parking_permit'].includes(v))
-					) {
-						properties.permitted = true;
+					if (isTimeLimited) hasTimeLimitedRule = true;
+					if (!ruleApplies) {
+						// Off-window: rule says nothing about this moment — don't
+						// flip canPark either way. The permissive default below
+						// handles the "free parking outside the window" case.
+						continue;
 					}
-					// Check for user classes
-					if (user_classes) {
-						if (user_classes.includes('accessible')) {
-							properties.accessible = true;
-						}
-						// If user classes are specified but don't include "car", no parking
-						if (user_classes.length > 1 && !user_classes.includes('car')) {
+					anyRuleActiveNow = true;
+					// Only mark a regular car as able to park when the rule
+					// is open to all comers — permit-only or non-car-only
+					// rules don't grant canPark for our default user.
+					const userClassIsPermit =
+						Array.isArray(user_classes) &&
+						user_classes.some((v) => /permit/i.test(v));
+					const requiresSpecialClass =
+						Array.isArray(user_classes) &&
+						user_classes.length > 0 &&
+						!user_classes.includes('car') &&
+						user_classes.length > 0;
+					if (!userClassIsPermit && !requiresSpecialClass) {
+						properties.canPark = true;
+					}
+					if (Array.isArray(user_classes) && user_classes.includes('accessible')) {
+						properties.accessible = true;
+					}
+
+					// Track max stay only when the rule is the one currently
+					// granting parking (so we don't surface limits the user
+					// can't actually be subject to).
+					if (properties.canPark && max_stay && max_stay_unit) {
+						properties.maxStay = max_stay_unit === 'hour' ? max_stay * 60 : max_stay;
+					}
+				} // No parking
+				else {
+					if (activity === 'no parking' || activity === 'no stopping') {
+						if (isTimeLimited) hasTimeLimitedRule = true;
+						if (ruleApplies) anyRuleActiveNow = true;
+						// An active flat-restriction flips canPark to false
+						// for regular cars (permit-only zones still mark
+						// permitted=true via the pre-scan, so the permit
+						// filter can re-include them).
+						if (ruleApplies && properties.canPark) {
 							properties.canPark = false;
 						}
 					}
 
-					// Check for days of week
-					if (properties.canPark && days_of_week) {
-						properties.canPark = days_of_week.includes(day);
-					}
-
-					// Check for time of day
-					if (
-						properties.canPark &&
-						time_of_day_start !== null &&
-						time_of_day_start !== time_of_day_end
-					) {
-						properties.canPark = time >= time_of_day_start && time <= time_of_day_end;
-					}
-
-					// Check for max stay property while parking is eligible
-					if (properties.canPark && max_stay && max_stay_unit) {
-						// If the unit is 'hour', multiple by 60 to get minutes
-						let maxStay = max_stay_unit === 'hour' ? max_stay * 60 : max_stay;
-						properties.maxStay = maxStay;
-					}
-					// Check for paid parking
-					if (properties.canPark && rate) {
-						properties.paid = true;
-					}
-				} // No parking
-				else {
-					const validDayOfWeek = days_of_week && days_of_week.includes(day);
-					const validTime =
-						time_of_day_start &&
-						time_of_day_end &&
-						time >= time_of_day_start &&
-						time <= time_of_day_end;
-
-					if (activity === 'no parking' || activity === 'no stopping') {
-						// Treat day/time as "always" when the field is null/equal.
-						const dayApplies = !days_of_week || days_of_week.includes(day);
-						const timeApplies =
-							time_of_day_start === null ||
-							time_of_day_start === time_of_day_end ||
-							(time >= time_of_day_start && time <= time_of_day_end);
-						hasTimeLimitedRestriction = true;
-						if (dayApplies && timeApplies) restrictionActiveNow = true;
-					}
-
-					// Check for days of week
-					// If parking is allowed and the "no parking" policy is not applied, skip
-					if (properties.canPark && days_of_week) {
-						properties.canPark = !validDayOfWeek;
-					}
-
-					// Check for time of day
-					if (
-						properties.canPark &&
-						time_of_day_start !== null &&
-						time_of_day_start !== time_of_day_end
-					) {
-						properties.canPark = !validTime;
-					}
-
-					// Check for loading zone
-					if (activity === 'loading' && validDayOfWeek && validTime) {
+					if (activity === 'loading' && ruleApplies) {
 						properties.loadingZone = true;
 					}
-
 				}
 			}
 		}
 	}
 
 	// Permissive default: if the zone's only regulations are time-limited
-	// restrictions and none of them apply at the selected day/time, parking
-	// is allowed. Without this, "No Parking Tue 12-4" zones render red on
-	// every other day/time. Runs before the unusable-image check below so
-	// we don't both flag the zone as "unknown" and allow parking.
-	if (!properties.canPark && hasTimeLimitedRestriction && !restrictionActiveNow) {
+	// (either "no parking Tue 12-4" or "metered Mon-Sat 8-8") and none of
+	// them apply right now, parking is allowed. Without this, off-window
+	// times read as "no parking" when they should be free.
+	if (!properties.canPark && hasTimeLimitedRule && !anyRuleActiveNow) {
 		properties.canPark = true;
 	}
+
 
 	// Only mark unusable if we couldn't determine any parking policy
 	if (!properties.canPark && !properties.loadingZone) {

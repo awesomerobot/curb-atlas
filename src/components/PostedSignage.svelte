@@ -1,10 +1,12 @@
 <script>
 	import { resolvePhotoUrl } from '../utils/signs-loader';
-	import { signsState } from '../state.svelte';
 
 	const { signs = [] } = $props();
 
-	const prefix = $derived(signsState.photoUrlPrefix);
+	const IMG_EXT = /\.(jpe?g|png|gif|webp|heic)$/i;
+	const PDF_EXT = /\.pdf$/i;
+	const kindOf = (path) =>
+		IMG_EXT.test(path) ? 'image' : PDF_EXT.test(path) ? 'pdf' : 'file';
 </script>
 
 <div class="PostedSignage">
@@ -14,7 +16,11 @@
 	{:else}
 		<p class="caption">
 			{signs.length} sign{signs.length === 1 ? '' : 's'} found within ~12 m of this curb. Photos
-			come from the BTD asset inventory; codes are translated via the BTD Sign Code Guide.
+			come from the <a
+				href="https://data.boston.gov/dataset/signs-cartegraph"
+				target="_blank"
+				rel="noopener">BTD sign inventory</a
+			>; codes are translated via the BTD Sign Code Guide.
 		</p>
 		<ul class="sign-list">
 			{#each signs as sign}
@@ -32,8 +38,19 @@
 					{#if sign.properties.photos?.length}
 						<div class="sign-photos">
 							{#each sign.properties.photos.slice(0, 3) as path}
-								<a class="thumb" href={resolvePhotoUrl(path, prefix)} target="_blank" rel="noopener">
-									<img alt="Sign {sign.properties.code}" src={resolvePhotoUrl(path, prefix)} loading="lazy" />
+								{@const kind = kindOf(path)}
+								<a
+									class={['thumb', kind]}
+									href={resolvePhotoUrl(path)}
+									target="_blank"
+									rel="noopener"
+									title={path}
+								>
+									{#if kind === 'image'}
+										<img alt="Sign {sign.properties.code}" src={resolvePhotoUrl(path)} loading="lazy" />
+									{:else}
+										<span class="thumb-label">{kind === 'pdf' ? 'PDF' : 'FILE'}</span>
+									{/if}
 								</a>
 							{/each}
 						</div>
@@ -62,6 +79,11 @@
 	.empty {
 		font-size: var(--font-size-ms);
 		color: var(--charles-blue);
+	}
+
+	.caption a {
+		color: var(--optimistic-blue, #1871BD);
+		text-decoration: underline;
 	}
 
 	.caption {
@@ -118,12 +140,31 @@
 	}
 
 	.thumb {
-		display: block;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		width: 80px;
 		height: 80px;
 		overflow: hidden;
 		border-radius: 4px;
 		background: #ddd;
+		text-decoration: none;
+		color: var(--charles-blue);
+		cursor: pointer;
+	}
+
+	.thumb.pdf {
+		background: #fbe0dd;
+	}
+
+	.thumb.file {
+		background: #e4e4e4;
+	}
+
+	.thumb-label {
+		font-size: var(--font-size-s);
+		font-weight: var(--font-weight-bold);
+		letter-spacing: 0.05em;
 	}
 
 	.thumb img {

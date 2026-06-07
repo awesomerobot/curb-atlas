@@ -2,7 +2,6 @@
 	import '../styles/global.scss';
 	import { onMount, untrack } from 'svelte';
 	import Frame from './Frame.svelte';
-	import BetaBanner from './BetaBanner.svelte';
 	import { encodeHash, decodeHash } from '../utils/hash';
 	import {
 		selectedAreaState,
@@ -10,11 +9,23 @@
 		filterState,
 		selectedCurbZoneState,
 		timeState,
-		mapState
+		mapState,
+		signsState
 	} from '../state.svelte';
 	import { TIMEOUT } from '../constants';
 	import throttle from 'lodash.throttle';
 	import bboxPolygon from '@turf/bbox-polygon';
+	import { loadSigns } from '../utils/signs-loader';
+
+	// Fire-and-forget: warm the signs.geojson cache in the background while the
+	// user reads the info modal, AND publish the photo URL prefix into signsState
+	// immediately so PostedSignage thumbnails always resolve against the CDN
+	// (regardless of whether the per-zone join has run yet).
+	loadSigns()
+		.then((cache) => {
+			signsState.photoUrlPrefix = cache.photoUrlPrefix;
+		})
+		.catch(() => {});
 
 	let mounted = $state(false);
 
@@ -82,7 +93,6 @@
 <div class="App">
 	<!-- This lets us set state before anything else happens -->
 	{#if mounted}
-		<BetaBanner />
 		<Frame />
 	{/if}
 </div>

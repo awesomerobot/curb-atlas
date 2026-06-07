@@ -31,7 +31,7 @@ export const initialFilterState = [
 			{
 				label: 'Include spots requiring payment',
 				id: 'paid',
-				value: false,
+				value: true,
 				type: 'checkbox'
 			}
 		]

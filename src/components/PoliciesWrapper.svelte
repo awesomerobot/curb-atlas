@@ -2,14 +2,9 @@
 	import { selectedCurbZoneState, signsState } from '../state.svelte';
 	import Policies from './Policies.svelte';
 	import PostedSignage from './PostedSignage.svelte';
-	import StreetViewButton from './StreetViewButton.svelte';
 	import AdditionalInfo from './AdditionalInfo.svelte';
-	import LinkOut from '../icons/LinkOut.svelte';
-	import length from '@turf/length';
-	import along from '@turf/along';
 
 	const realPolicies = $derived(selectedCurbZoneState.policies);
-	const geometry = $derived(selectedCurbZoneState.geometry);
 	const properties = $derived(selectedCurbZoneState.properties);
 	let curbZoneId = $derived(properties?.curb_zone_id);
 
@@ -43,58 +38,52 @@
 		hasNoRealData && derivedPolicies.length ? derivedPolicies : filteredRealPolicies
 	);
 
+	// Mirrors the field set AdditionalInfo's `items` is built from. The tab
+	// button + content are hidden entirely when nothing would render.
+	const hasAdditionalInfoFields = $derived(
+		!!properties?.jurisdiction_type ||
+			properties?.available !== undefined ||
+			properties?.num_spaces !== undefined ||
+			!!properties?.parking_angle ||
+			!!properties?.street_side ||
+			!!properties?.median ||
+			!!properties?.entire_roadway
+	);
+	const hasAdditionalTab = $derived(hasAdditionalInfoFields || nearbySigns.length > 0);
+
 	let activeTab = $state('policies');
 
-	const midpoint = $derived.by(() => {
-		if (!geometry) return null;
-
-		const line = {
-			type: 'Feature',
-			geometry
-		};
-
-		// Get total length of the line in kilometers
-		const lineLength = length(line, { units: 'kilometers' });
-
-		// Get the midpoint
-		const midpoint = along(line, lineLength / 2, { units: 'kilometers' });
-
-		return midpoint.geometry.coordinates;
+	// If the user is parked on a tab that no longer has content (after a new
+	// segment select), bounce them back to Policies.
+	$effect(() => {
+		if (activeTab === 'additional_info' && !hasAdditionalTab) activeTab = 'policies';
 	});
 
-	const streetViewUrl = $derived.by(() => {
-		if (!midpoint) return null;
-		return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${midpoint[1]},${midpoint[0]}&heading=-45&pitch=0&fov=80`;
-	});
 </script>
 
 <div class="PoliciesWrapper">
-	<div class="panels">
-		<button
-			class={['panel-button', { active: activeTab === 'policies' }]}
-			onclick={() => (activeTab = 'policies')}>Policies</button
-		>
-		<button
-			class={['panel-button', { active: activeTab === 'additional_info' }]}
-			onclick={() => (activeTab = 'additional_info')}>Additional info</button
-		>
-		{#if nearbySigns.length}
+	{#if hasAdditionalTab}
+		<div class="panels">
 			<button
-				class={['panel-button', { active: activeTab === 'signage' }]}
-				onclick={() => (activeTab = 'signage')}>Posted signage ({nearbySigns.length})</button
+				class={['panel-button', { active: activeTab === 'policies' }]}
+				onclick={() => (activeTab = 'policies')}>Policies</button
 			>
-		{/if}
-
-		<a class="panel-button streetview" href={streetViewUrl} target="_blank"
-			>Street view <div class="link-out-icon"><LinkOut /></div></a
-		>
-	</div>
+			<button
+				class={['panel-button', { active: activeTab === 'additional_info' }]}
+				onclick={() => (activeTab = 'additional_info')}
+				>Additional info{#if nearbySigns.length}&nbsp;({nearbySigns.length}){/if}</button
+			>
+		</div>
+	{/if}
 	{#if activeTab === 'policies'}
 		<Policies {policies} {curbZoneId} estimated={hasNoRealData && derivedPolicies.length > 0} />
 	{:else if activeTab === 'additional_info'}
-		<AdditionalInfo {properties} />
-	{:else if activeTab === 'signage'}
-		<PostedSignage signs={nearbySigns} />
+		<div class="additional-info-stack">
+			<AdditionalInfo {properties} />
+			{#if nearbySigns.length}
+				<PostedSignage signs={nearbySigns} />
+			{/if}
+		</div>
 	{/if}
 </div>
 
@@ -104,31 +93,18 @@
 		width: 360px;
 	}
 
-	.streetview {
-		display: flex;
-		gap: 0.5rem;
-		align-items: center;
-	}
-
-	.link-out-icon {
-		height: var(--font-size-ms);
-
-		:global(svg) {
-			width: 100%;
-			height: 100%;
-
-			:global(path) {
-				fill: var(--charles-blue);
-			}
-		}
-	}
-
 	.panels {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		gap: 1rem;
 
 		margin-bottom: 1rem;
+	}
+
+	.additional-info-stack {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
 	}
 
 	.panel-button {

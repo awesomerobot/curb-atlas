@@ -1,9 +1,7 @@
 <script>
 	import { calendarizePolicies } from '../utils/calendarize-policies';
 	import { timeState } from '../state.svelte';
-	import Dropdown from './Dropdown.svelte';
-	import { dayOfWeekOptions, timeOptions, colors } from '../constants';
-	import { onMount } from 'svelte';
+	import { timeOptions, colors } from '../constants';
 
 	const { policies, setHighlightedPolicyId } = $props();
 
@@ -93,11 +91,6 @@
 </script>
 
 <div class="Calendar">
-	<Dropdown
-		options={dayOfWeekOptions}
-		value={timeState.day}
-		onChange={(v) => (timeState.day = v)}
-	/>
 	{#if calendar}
 		<div class="calendar-container">
 			<div class="calendar-container-inner">

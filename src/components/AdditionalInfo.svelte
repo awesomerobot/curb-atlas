@@ -25,8 +25,12 @@
 		const entireRoadway = properties?.entire_roadway;
 
 		const availability = [
-			// Available
-			{ key: 'Parking', value: availableParking },
+			// Only show "Parking: Available/Unavailable" when the API actually
+			// supplied a value — otherwise it's always "Unavailable" by default,
+			// which is misleading for zones with no real-time availability data.
+			...(properties?.available !== undefined
+				? [{ key: 'Parking', value: availableParking }]
+				: []),
 			// Number of spaces
 			...(!!properties?.num_spaces || properties?.num_spaces === 0
 				? [{ key: 'Available spaces', value: availableParkingSpaces }]
@@ -47,20 +51,22 @@
 	});
 </script>
 
-<div class="AdditionalInfo">
-	<div class="title">Additional info</div>
+{#if items.length}
+	<div class="AdditionalInfo">
+		<div class="title">Additional info</div>
 
-	<ul class="info-list-container">
-		{#each items as item}
-			<li>
-				<div class="section">
-					<div class="list-item-key">{item?.key}:</div>
-					<div class="list-item-value">{item?.value}</div>
-				</div>
-			</li>
-		{/each}
-	</ul>
-</div>
+		<ul class="info-list-container">
+			{#each items as item}
+				<li>
+					<div class="section">
+						<div class="list-item-key">{item?.key}:</div>
+						<div class="list-item-value">{item?.value}</div>
+					</div>
+				</li>
+			{/each}
+		</ul>
+	</div>
+{/if}
 
 <style lang="scss">
 	.AdditionalInfo {

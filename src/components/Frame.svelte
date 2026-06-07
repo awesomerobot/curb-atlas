@@ -5,26 +5,33 @@
 	import MenuButton from './MenuButton.svelte';
 	import SelectAreaMenu from './SelectAreaMenu.svelte';
 	import Filters from './Filters.svelte';
-	import TimeSelector from './TimeSelector.svelte';
 	import PoliciesWrapper from './PoliciesWrapper.svelte';
-	import { selectedCurbZoneState, timeState, loadingState, mapState } from '../state.svelte';
+	import StreetViewButton from './StreetViewButton.svelte';
+	import { selectedCurbZoneState, filterState } from '../state.svelte';
 	import DigitalSeal from '../images/low_res_digital_seal.png';
 	import Close from '../icons/Close.svelte';
-	import { timeToRealTime, dayToFullDay } from '../utils/basic-utils';
-	import { CURB_ZONE_MINZOOM } from '../constants';
 	import TimeContainer from './TimeContainer.svelte';
-	import Loader from './Loader.svelte';
 
 	let infoModalOpen = $state(true);
-	let zoomInPromptVisible = $derived(mapState?.position?.zoom < CURB_ZONE_MINZOOM);
 
 	let openMenus = $state({
 		filters: false,
-		time: false,
 		policies: false
 	});
 
+	let selectedZoneId = $derived(selectedCurbZoneState?.properties?.curb_zone_id);
 	let hasPolicies = $derived(!!selectedCurbZoneState?.policies);
+
+	// Count of toggled-on filter options for the "Set Filters" button badge.
+	let activeFilterCount = $derived(
+		(filterState.current || []).reduce(
+			(acc, section) => acc + (section.options || []).filter((o) => o?.value).length,
+			0
+		)
+	);
+	let filtersLabel = $derived(
+		activeFilterCount > 0 ? `Set Filters (${activeFilterCount})` : 'Set Filters'
+	);
 
 	const setOpenMenu = (key) => {
 		openMenus = Object.fromEntries(
@@ -38,15 +45,16 @@
 		);
 	};
 
+	// Auto-open the policies panel every time the user selects a (different)
+	// zone — keying on the id rather than just hasPolicies so clicking a new
+	// segment re-opens it even if a prior selection had already filled in
+	// policies.
 	$effect(() => {
-		if (hasPolicies) {
-			untrack(() => {
-				openMenus.policies = true;
-			});
+		selectedZoneId; // tracked
+		if (selectedZoneId) {
+			untrack(() => (openMenus.policies = true));
 		} else {
-			untrack(() => {
-				openMenus.policies = false;
-			});
+			untrack(() => (openMenus.policies = false));
 		}
 	});
 </script>
@@ -57,9 +65,6 @@
 	</div>
 	<div class="map-container" role="main">
 		<Map />
-		{#if zoomInPromptVisible}
-			<div class="zoom-prompt">Zoom in to see or select curb zones</div>
-		{/if}
 
 		<div class="top-left" role="navigation"><SelectAreaMenu /></div>
 		<div class="top-right">
@@ -70,17 +75,15 @@
 			<div class="button-container">
 				<div class="button-container-section">
 					<MenuButton
-						label="Set Filters"
+						label={filtersLabel}
 						setOpen={() => setOpenMenu('filters')}
 						open={openMenus['filters']}
 					>
 						<Filters /></MenuButton
 					>
-					<MenuButton label="Set Time" setOpen={() => setOpenMenu('time')} open={openMenus['time']}>
-						<TimeSelector /></MenuButton
-					>
 				</div>
 				<div class="button-container-section">
+					<StreetViewButton />
 					<MenuButton
 						label="See Policies"
 						setOpen={() => setOpenMenu('policies')}
@@ -122,9 +125,6 @@
 			</div>
 		{/if}
 	</div>
-	{#if loadingState.loading}
-		<Loader />
-	{/if}
 </div>
 
 <style lang="scss">
@@ -133,26 +133,6 @@
 		flex-direction: column;
 		width: 100%;
 		height: 100%;
-	}
-
-	.zoom-prompt {
-		position: absolute;
-		width: 100%;
-		height: 100%;
-		top: 0;
-		bottom: 0;
-		left: 0;
-		right: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		pointer-events: none;
-		background-color: var(--charles-blue-40);
-		color: var(--white);
-		font-family: var(--primary-font);
-		font-weight: var(--font-weight-bold);
-		text-transform: uppercase;
-		font-size: var(--font-size-l);
 	}
 
 	.info-modal-screen-container {
@@ -265,6 +245,7 @@
 		padding: 2.5rem 1rem;
 		top: 0;
 		right: 0;
+		z-index: 10;
 	}
 
 	.bottom-row {

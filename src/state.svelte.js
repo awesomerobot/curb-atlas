@@ -4,7 +4,7 @@ export let mapState = $state({
 	map: null,
 	position: {
 		center: [-71.05774, 42.36453],
-		zoom: 12
+		zoom: 15
 	}
 });
 

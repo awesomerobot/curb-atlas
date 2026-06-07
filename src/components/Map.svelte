@@ -3,8 +3,26 @@
 	import throttle from 'lodash.throttle';
 	import mapboxgl from 'mapbox-gl';
 	import 'mapbox-gl/dist/mapbox-gl.css';
-	import { mapboxAccessToken, maxBounds, dasharrays, widths, colors, CURB_ZONE_MINZOOM, AUTO_LOAD_MINZOOM, TIMEOUT } from '../constants';
+	import { mapboxAccessToken, maxBounds, colors, widths, CURB_ZONE_MINZOOM, AUTO_LOAD_MINZOOM, TIMEOUT } from '../constants';
 	import { simplifyFilters } from '../utils/basic-utils';
+	import {
+		parkingLineColor,
+		parkingLineWidth,
+		parkingLineDasharray,
+		parkingEmphasisOutline,
+		parkingEmphasis,
+		parkingSymbol,
+		parkingSymbolFilter,
+		scaledByZoom
+	} from '../utils/map-paint-expressions';
+	import {
+		containsBbox,
+		bboxDifferenceRects,
+		bboxFromPolygonFeature,
+		bboxToPolygonFeature,
+		buildTileGrid
+	} from '../utils/bbox-math';
+	import { createLoadingRegion } from '../utils/loading-region';
 	import {
 		geocoderState,
 		mapState,
@@ -16,10 +34,7 @@
 	} from '../state.svelte';
 	import { getCurbZonesByArea } from '../utils/get-curb-zones';
 	import { getCurbPoliciesById } from '../utils/get-curb-policies-by-id';
-	import NoZonesModal from './NoZonesModal.svelte';
 	import * as turf from '@turf/turf';
-
-	let showNoZoneWarning = $state(false);
 
 	const TIMEOUT_TIME = 150;
 	const waitForStyleLoad = (map, res) => {
@@ -36,280 +51,27 @@
 
 	let hoveredCurbId = $state(null);
 
+	// Padded bbox of the data currently loaded into the map source, and the
+	// previous value captured at the moment we kicked off the in-flight fetch.
+	// Used to (a) skip refetches when the visible area is already covered, and
+	// (b) tint only the genuinely-new strip(s) during a refetch.
+	let loadedBbox = null;
+	let priorLoadedBbox = null;
+
 	const curbLayout = {
 		'line-join': 'round',
 		'line-cap': 'round'
 	};
 
-	const curbFilter = ['!=', ['get', 'selectionOnly'], true];
-
 	const filters = $derived(simplifyFilters(filterState.current));
 
-	const generateNestedCondition = (bothResult, permittedResult, paidResult, defaultResult) => [
-			'case',
-			[
-				'all',
-				['has', 'permitted'],
-				['==', ['get', 'permitted'], true],
-				['has', 'paid'],
-				['==', ['get', 'paid'], true]
-			],
-			bothResult,
-			['all', ['has', 'permitted'], ['==', ['get', 'permitted'], true]],
-			permittedResult,
-			['all', ['has', 'paid'], ['==', ['get', 'paid'], true]],
-			paidResult,
-			defaultResult
-		];
-
-	const generateOuterNestedCondition = (isLoadingZone, isAccessible, loadingResult, accessibleResult, nestedCondition) => {
-		// If both, accessible gets priority
-		if (isLoadingZone && isAccessible) {
-			return [
-				'case',
-				['to-boolean', ['get', 'accessible']],
-				accessibleResult,
-				['to-boolean', ['get', 'loadingZone']],
-				loadingResult,
-				nestedCondition
-			];
-		} else if (isAccessible) {
-			return [
-				'case',
-				['to-boolean', ['get', 'accessible']],
-				accessibleResult,
-				nestedCondition
-			];
-		} else if (isLoadingZone) {
-			return [
-				'case',
-				['to-boolean', ['get', 'loadingZone']],
-				loadingResult,
-				nestedCondition
-			];
-		} else {
-			return nestedCondition;
-		}
-	};
-
-	const generateCanParkCondition = (permitted, paid) => {
-		if (permitted && paid) {
-			return ['to-boolean', ['get', 'canPark']];
-		} else if (permitted) {
-			return [
-				'all',
-				['to-boolean', ['get', 'canPark']],
-				['!', ['to-boolean', ['get', 'paid']]]
-			];
-		} else if (paid) {
-			return [
-				'all',
-				['to-boolean', ['get', 'canPark']],
-				['!', ['to-boolean', ['get', 'permitted']]]
-			];
-		} else {
-			return [
-				'all',
-				['to-boolean', ['get', 'canPark']],
-				['!', ['to-boolean', ['get', 'permitted']]],
-				['!', ['to-boolean', ['get', 'paid']]]
-			];
-		}
-	};
-
-	// A zone is "estimated" when the city pipeline has *no* real data for it
-	// (upstream's post-loop logic only sets unusableImage when every policy is
-	// the sentinel) AND we have signage data joined to it from the inventory.
-	// Amber on the map ⇒ "the policies you'll see are derived from signage."
-	const isEstimatedExpr = [
-		'all',
-		['to-boolean', ['get', 'unusableImage']],
-		['to-boolean', ['get', 'hasDerivedSignage']]
-	];
-
-	const parkingLineWidthExpression = $derived.by(() => {
-		const { paid, permitted } = filters;
-
-		let condition = generateCanParkCondition(permitted, paid);
-
-		return [
-			'case',
-			['to-boolean', ['get', 'unusableImage']],
-			widths.unusableCurbZoneWidth,
-			condition,
-			widths.curbZoneWidth,
-			widths.notAllowedCurbZoneWidth
-		];
-	});
-
-	const parkingLineDasharrayExpression = $derived.by(() => {
-		const { paid, permitted } = filters;
-
-		let condition = generateCanParkCondition(permitted, paid);
-
-		return [
-			'case',
-			['to-boolean', ['get', 'unusableImage']],
-			dasharrays.unusableImageDasharray, // gray dashed line (estimated uses same dash, differs only in color)
-			condition,
-			dasharrays.curbZoneDasharray, // solid line
-			dasharrays.notAllowedCurbZoneDasharray // dotted line
-		];
-	});
-
-	const parkingLineColorExpression = $derived.by(() => {
-		const { paid, permitted, accessible, loadingZone } = filters;
-
-		let nestedCondition = generateNestedCondition(
-			colors.parkingAllowedPermittedPaid,
-			colors.parkingAllowedPermitted,
-			colors.parkingAllowedPaid,
-			colors.parkingAllowed
-		);
-
-		let nestedConditionLightened = generateNestedCondition(
-			colors.parkingAllowedPermittedPaidLight,
-			colors.parkingAllowedPermittedLight,
-			colors.parkingAllowedPaidLight,
-			colors.parkingAllowedLight
-		);
-
-		let fallback = colors.parkingNotAllowed;
-
-		let condition = generateCanParkCondition(permitted, paid);
-
-		if (loadingZone || accessible) {
-			nestedCondition = generateOuterNestedCondition(
-				loadingZone,
-				accessible,
-				colors.loading,
-				colors.accessible,
-				nestedConditionLightened
-			);
-			fallback = colors.parkingNotAllowedLight;
-		}	
-
-		return [
-			'case',
-			isEstimatedExpr,
-			colors.estimated,
-			['to-boolean', ['get', 'unusableImage']],
-			colors.unusableImage,
-			['boolean', ['feature-state', 'hover'], false],
-			colors.hoverHighlightColor,
-			condition,
-			nestedCondition,
-			fallback
-		];
-	});
-
-	const parkingEmphasisOutlineExpression = $derived.by(() => {
-		const { accessible, loadingZone } = filters;
-		let condition = 'transparent';
-		let outlineColor = '#ffffff';
-
-		return generateOuterNestedCondition(
-			loadingZone,
-			accessible,
-			outlineColor,
-			outlineColor,
-			condition
-		);
-	});
-
-	const parkingEmphasisExpression = $derived.by(() => {
-		const { accessible, loadingZone } = filters;
-		let condition = 'transparent';
-
-		return [
-			'case',
-			['boolean', ['feature-state', 'hover'], false],
-			colors.hoverHighlightColor,
-			generateOuterNestedCondition(
-				loadingZone,
-				accessible,
-				colors.loading,
-				colors.accessible,
-				condition
-			)
-		];
-	});
-
-	const parkingSymbolExpression = $derived.by(() => {
-		const { accessible, loadingZone } = filters;
-		let condition = 'none'; // default no symbol
-
-		// If both, accessible gets priority
-		if (loadingZone && accessible) {
-			condition = [
-				'case',
-				['to-boolean', ['get', 'accessible']],
-				[
-					'image',
-					'wheelchair 24x24',
-					{
-						params: {
-							'color-2': colors.accessibleIconFill,
-							'color-1': colors.accessibleIconStroke
-						}
-					}
-				],
-				[
-					'image',
-					'loading 24x24',
-					{
-						params: {
-							'color-2': colors.loadingIconFill,
-							'color-1': colors.loadingIconStroke
-						}
-					}
-				]
-			];
-		} else if (accessible) {
-			condition = [
-				'image',
-				'wheelchair 24x24',
-				{
-					params: {
-						'color-2': colors.accessibleIconFill,
-						'color-1': colors.accessibleIconStroke
-					}
-				}
-			];
-		} else if (loadingZone) {
-			condition = [
-				'image',
-				'loading 24x24',
-				{
-					params: {
-						'color-2': colors.loadingIconFill,
-						'color-1': colors.loadingIconStroke
-					}
-				}
-			];
-		}
-
-		return condition;
-	});
-
-	const parkingSymbolFilter = $derived.by(() => {
-		const { accessible, loadingZone } = filters;
-		let condition = false;
-
-		if (loadingZone && accessible) {
-			condition = [
-				'any',
-				['to-boolean', ['get', 'accessible']],
-				['to-boolean', ['get', 'loadingZone']]
-			];
-		} else if (accessible) {
-			condition = ['to-boolean', ['get', 'accessible']];
-		} else if (loadingZone) {
-			condition = ['to-boolean', ['get', 'loadingZone']];
-		}
-
-		return condition;
-	});
+	const parkingLineColorExpression = $derived(parkingLineColor(filters));
+	const parkingLineWidthExpression = $derived(parkingLineWidth(filters));
+	const parkingLineDasharrayExpression = $derived(parkingLineDasharray(filters));
+	const parkingEmphasisOutlineExpression = $derived(parkingEmphasisOutline(filters));
+	const parkingEmphasisExpression = $derived(parkingEmphasis(filters));
+	const parkingSymbolExpression = $derived(parkingSymbol(filters));
+	const parkingSymbolFilterExpression = $derived(parkingSymbolFilter(filters));
 
 	const throttledSetPositionState = throttle(() => {
 		const center = mapState.map.getCenter();
@@ -325,6 +87,7 @@
 			center: mapState.position.center,
 			zoom: mapState.position.zoom,
 			maxBounds: [maxBounds.slice(0, 2), maxBounds.slice(2)],
+			minZoom: AUTO_LOAD_MINZOOM,
 			maxZoom: 17
 		});
 
@@ -337,8 +100,12 @@
 		mapState.map.on('move', throttledSetPositionState);
 
 		// Auto-load curb zones for whatever's currently in view (above AUTO_LOAD_MINZOOM).
-		// Drop the existing selection when the user zooms back out so the cleanup
-		// effect tears down the layers and the "zoom in" prompt shows clean.
+		// - Pad the fetched bbox so small pans don't refetch (viewport pad).
+		// - Skip entirely when the new viewport is still inside the last-loaded
+		//   padded bbox — same data, no work to do.
+		// - Drop the selection on zoom-out so the cleanup effect tears down layers.
+		const VIEWPORT_PAD = 0.25; // fetch 1.5x viewport on each axis (0.25 each side)
+
 		const syncViewportSelection = () => {
 			const zoom = mapState.map.getZoom();
 			if (zoom < AUTO_LOAD_MINZOOM) {
@@ -346,32 +113,35 @@
 					selectedAreaState.selected = null;
 					selectedAreaState.type = null;
 					selectedAreaState.isViewport = false;
+					loadedBbox = null;
 				}
 				return;
 			}
 			const b = mapState.map.getBounds();
 			const sw = b.getSouthWest();
 			const ne = b.getNorthEast();
-			const polygon = {
-				type: 'Feature',
-				properties: {},
-				geometry: {
-					type: 'Polygon',
-					coordinates: [[
-						[sw.lng, sw.lat],
-						[ne.lng, sw.lat],
-						[ne.lng, ne.lat],
-						[sw.lng, ne.lat],
-						[sw.lng, sw.lat]
-					]]
-				}
-			};
+			const lngPad = (ne.lng - sw.lng) * VIEWPORT_PAD;
+			const latPad = (ne.lat - sw.lat) * VIEWPORT_PAD;
+			const paddedBbox = [sw.lng - lngPad, sw.lat - latPad, ne.lng + lngPad, ne.lat + latPad];
+			const visibleBbox = [sw.lng, sw.lat, ne.lng, ne.lat];
+
+			// Visible area still inside the last-loaded padded bbox? Skip.
+			if (containsBbox(loadedBbox, visibleBbox)) return;
+
+			// Stash the old loadedBbox so addCurbZonesLayers can tint only the
+			// genuinely-new rectangle(s). Update loadedBbox eagerly so
+			// subsequent pans within the new region don't re-trigger.
+			priorLoadedBbox = loadedBbox;
+			loadedBbox = paddedBbox;
 			selectedAreaState.isViewport = true;
 			selectedAreaState.type = 'area';
-			selectedAreaState.selected = polygon;
+			selectedAreaState.selected = bboxToPolygonFeature(paddedBbox);
 		};
 
-		mapState.map.on('moveend', syncViewportSelection);
+		// Debounce so a rapid pan/zoom gesture (which can fire moveend multiple
+		// times) coalesces into a single refetch after the user settles.
+		const debouncedSync = throttle(syncViewportSelection, 250, { leading: false, trailing: true });
+		mapState.map.on('moveend', debouncedSync);
 
 		mapState.map.on('load', () => {
 			mapState.map.dragRotate.disable();
@@ -408,15 +178,19 @@
 	];
 
 	const selectCurbZoneSegment = (feature) => {
-		// Remove selected curb zone
-		if (mapState.map.getLayer(SELECTED_CURB_ZONE_LAYER_ID)) {
-			mapState.map.removeLayer(SELECTED_CURB_ZONE_LAYER_ID);
-			mapState.map.removeLayer(SELECTED_CURB_ZONE_STROKE_LAYER_ID);
-			mapState.map.removeSource(SELECTED_CURB_ZONE_SOURCE_ID);
-
-			mapState.map.removeLayer(SELECTED_CURB_ZONE_ENDPOINT_LAYER_ID);
-			mapState.map.removeLayer(SELECTED_CURB_ZONE_ENDPOINT_STROKE_LAYER_ID);
-			mapState.map.removeSource(SELECTED_CURB_ZONE_ENDPOINT_SOURCE_ID);
+		// Tear down any previous selection. Check sources/layers independently
+		// so we don't leak a source when its layers were never added (causes
+		// "There is already a source with ID …" the next time around).
+		for (const id of [
+			SELECTED_CURB_ZONE_LAYER_ID,
+			SELECTED_CURB_ZONE_STROKE_LAYER_ID,
+			SELECTED_CURB_ZONE_ENDPOINT_LAYER_ID,
+			SELECTED_CURB_ZONE_ENDPOINT_STROKE_LAYER_ID
+		]) {
+			if (mapState.map.getLayer(id)) mapState.map.removeLayer(id);
+		}
+		for (const id of [SELECTED_CURB_ZONE_SOURCE_ID, SELECTED_CURB_ZONE_ENDPOINT_SOURCE_ID]) {
+			if (mapState.map.getSource(id)) mapState.map.removeSource(id);
 		}
 
 		const { geometry, properties } = feature;
@@ -542,181 +316,134 @@
 		});
 	};
 
-	const addCurbZonesLayers = async (type, day, time) => {
-		let fetchFn = null;
+	const loadingRegion = createLoadingRegion(() => mapState.map);
+	const showLoadingRegion = loadingRegion.show;
+	const hideLoadingBbox = loadingRegion.hide;
 
-		if (type === 'area') {
-			const { min_lng, min_lat, max_lng, max_lat } =
-				selectedAreaState.selected.geometry.coordinates[0].reduce(
-					(acc, coord) => {
-						const [lng, lat] = coord;
-						if (lng < acc.min_lng) acc.min_lng = lng;
-						if (lng > acc.max_lng) acc.max_lng = lng;
-						if (lat < acc.min_lat) acc.min_lat = lat;
-						if (lat > acc.max_lat) acc.max_lat = lat;
-						return acc;
-					},
-					{
-						min_lng: Infinity,
-						min_lat: Infinity,
-						max_lng: -Infinity,
-						max_lat: -Infinity
-					}
-				);
-			fetchFn = () => getCurbZonesByArea(min_lng, min_lat, max_lng, max_lat, day, time);
+	const addCurbZonesLayers = async (type, day, time) => {
+		if (type !== 'area') return;
+
+		const [min_lng, min_lat, max_lng, max_lat] = bboxFromPolygonFeature(
+			selectedAreaState.selected
+		);
+
+		// Per-tile loading rectangles — tint only the strips of each tile
+		// that aren't already covered by data we loaded previously.
+		const GRID_SIZE = 3;
+		const tiles = buildTileGrid([min_lng, min_lat, max_lng, max_lat], GRID_SIZE);
+		const tileKey = (b) => b.join(',');
+		const pendingRectsByTile = new Map(
+			tiles.map((tb) => [tileKey(tb), bboxDifferenceRects(tb, priorLoadedBbox)])
+		);
+
+		const renderLoadingRegion = () => {
+			const rects = [...pendingRectsByTile.values()].flat();
+			if (rects.length === 0) hideLoadingBbox();
+			else showLoadingRegion(rects);
+		};
+		renderLoadingRegion();
+
+		// Pre-seed the accumulator with whatever the source already has so the
+		// existing zones don't flash off the map while tiles arrive.
+		const featuresByZoneId = new Map();
+		const existingSrc = mapState.map.getSource(CURB_ZONES_SOURCE_ID);
+		if (existingSrc?._data?.features) {
+			for (const f of existingSrc._data.features) {
+				const id = f.properties?.curb_zone_id;
+				if (id) featuresByZoneId.set(id, f);
+			}
 		}
 
-		if (!fetchFn) return;
-
-		const curbZones = await fetchFn().then((curbZones) => {
-			if (!curbZones || !curbZones.features.length) {
-				showNoZoneWarning = true;
+		const upsertCurbZoneSource = (fc) => {
+			const src = mapState.map.getSource(CURB_ZONES_SOURCE_ID);
+			if (src) {
+				src.setData(fc);
 				return;
 			}
-
-			// Clipping logic (potentially move to its own discrete function)
-			const selectedArea = JSON.parse(JSON.stringify(selectedAreaState.selected));
-
-			// Setup an empty array to collect line segmets clipped by clip area
-			let linesArray = [];
-
-			turf.featureEach(JSON.parse(JSON.stringify(curbZones)), (line) => {
-				const { properties } = line;
-				// Check if the line feature is fully within the clip area. If it is, add it to linesArray.
-				// Add "innerLine" property to be used alongside "selectionOnly"
-				if (turf.booleanWithin(line, selectedArea)) {
-					const innerLine = { ...line, properties: { ...properties, innerLine: true } };
-					linesArray.push(innerLine);
-				} else {
-					// If the feature is not fully within the clip area, split the line by the clip area
-					let splitResults = turf.lineSplit(line, selectedArea);
-					// Ignore this for curb zones layer, but not selected layer by adding the "selectionOnly" flag
-					// This is duplicative so we can show a full segment for selection
-					const edgeLine = { ...line, properties: { ...properties, selectionOnly: true } };
-					linesArray.push(edgeLine);
-					// Take the resulting features from the split, calculate a point on surface, and
-					// check if the point is within the clip area. If it is, add the line segment to linesArray.
-					turf.featureEach(splitResults, (splitResult) => {
-						splitResult.properties = properties;
-						let pof = turf.pointOnFeature(splitResult);
-						if (turf.booleanWithin(pof, selectedArea)) {
-							linesArray.push(splitResult);
-						}
-					});
+			mapState.map.addSource(CURB_ZONES_SOURCE_ID, { type: 'geojson', data: fc, generateId: true });
+			mapState.map.addLayer({
+				id: CURB_ZONES_LAYER_ID,
+				minzoom: CURB_ZONE_MINZOOM,
+				type: 'line',
+				source: CURB_ZONES_SOURCE_ID,
+				layout: curbLayout,
+				paint: {
+					'line-color': parkingLineColorExpression,
+					'line-width': parkingLineWidthExpression,
+					'line-dasharray': parkingLineDasharrayExpression
 				}
 			});
-
-			const nextData = turf.featureCollection(linesArray);
-
-			const nextSource = {
-				type: 'geojson',
-				data: nextData,
-				generateId: true
+			mapState.map.addLayer({
+				id: CURB_ZONES_EMPHASIS_OUTLINE_LAYER_ID,
+				minzoom: CURB_ZONE_MINZOOM,
+				type: 'line',
+				source: CURB_ZONES_SOURCE_ID,
+				layout: curbLayout,
+				paint: {
+					'line-color': parkingEmphasisOutlineExpression,
+					'line-width': scaledByZoom(widths.curbZoneEmphasisOutline)
+				}
+			});
+			mapState.map.addLayer({
+				id: CURB_ZONES_EMPHASIS_LAYER_ID,
+				minzoom: CURB_ZONE_MINZOOM,
+				type: 'line',
+				source: CURB_ZONES_SOURCE_ID,
+				layout: curbLayout,
+				paint: {
+					'line-color': parkingEmphasisExpression,
+					'line-width': scaledByZoom(widths.curbZoneEmphasisWidth)
+				}
+			});
+			addHoverState(CURB_ZONES_EMPHASIS_LAYER_ID, CURB_ZONES_SOURCE_ID);
+			mapState.map.addLayer({
+				id: CURB_ZONES_SYMBOL_LAYER_ID,
+				minzoom: CURB_ZONE_MINZOOM,
+				type: 'symbol',
+				source: CURB_ZONES_SOURCE_ID,
+				filter: parkingSymbolFilterExpression,
+				layout: {
+					'symbol-placement': 'line-center',
+					'icon-rotation-alignment': 'viewport',
+					'icon-image': parkingSymbolExpression
+				},
+				paint: {}
+			});
+			const onCurbZoneClick = (e) => {
+				if (!e.features?.length) return;
+				if (e.features[0]?.properties?.curb_zone_id) {
+					selectCurbZoneSegment(e.features[0]);
+				}
 			};
+			mapState.map.on('click', CURB_ZONES_LAYER_ID, onCurbZoneClick);
+			mapState.map.on('click', CURB_ZONES_EMPHASIS_OUTLINE_LAYER_ID, onCurbZoneClick);
+		};
 
-			const existingSource = mapState.map.getSource(CURB_ZONES_SOURCE_ID);
-
-			if (!existingSource) {
-				mapState.map.addSource(CURB_ZONES_SOURCE_ID, nextSource);
-
-				const nextLayer = {
-					id: CURB_ZONES_LAYER_ID,
-					minzoom: CURB_ZONE_MINZOOM,
-					type: 'line',
-					source: CURB_ZONES_SOURCE_ID,
-					filter: curbFilter,
-					layout: curbLayout,
-					paint: {
-						'line-color': parkingLineColorExpression,
-						'line-width': parkingLineWidthExpression,
-						'line-dasharray': parkingLineDasharrayExpression,
-					}
-				};
-
-				mapState.map.addLayer(nextLayer);
-
-				const emphasisOutlineLayer = {
-					id: CURB_ZONES_EMPHASIS_OUTLINE_LAYER_ID,
-					minzoom: CURB_ZONE_MINZOOM,
-					type: 'line',
-					source: CURB_ZONES_SOURCE_ID,
-					layout: curbLayout,
-					paint: {
-						'line-color': parkingEmphasisOutlineExpression,
-						'line-width': widths.curbZoneEmphasisOutline
-					}
-				};
-
-				mapState.map.addLayer(emphasisOutlineLayer);
-
-				const emphasisLayer = {
-					id: CURB_ZONES_EMPHASIS_LAYER_ID,
-					minzoom: CURB_ZONE_MINZOOM,
-					type: 'line',
-					source: CURB_ZONES_SOURCE_ID,
-					filter: curbFilter,
-					layout: curbLayout,
-					paint: {
-						'line-color': parkingEmphasisExpression,
-						'line-width': widths.curbZoneEmphasisWidth
-					}
-				};
-
-				mapState.map.addLayer(emphasisLayer);
-
-				addHoverState(CURB_ZONES_EMPHASIS_LAYER_ID, CURB_ZONES_SOURCE_ID);
-
-				const symbolLayer = {
-					id: CURB_ZONES_SYMBOL_LAYER_ID,
-					minzoom: CURB_ZONE_MINZOOM,
-					type: 'symbol',
-					source: CURB_ZONES_SOURCE_ID,
-					filter: curbFilter,
-					filter: parkingSymbolFilter,
-					layout: {
-						'symbol-placement': 'line-center',
-						'icon-rotation-alignment': 'viewport',
-						'icon-image': parkingSymbolExpression
-					},
-					paint: {}
-				};
-
-				mapState.map.addLayer(symbolLayer);
-
-				const onCurbZoneClick = (e) => {
-					if (!e.features?.length) return;
-					const zoneId = e.features[0]?.properties?.curb_zone_id;
-					if (!zoneId) return;
-					// Query the source because we want to pass the non-cropped geometries to selected segment
-					const selectionFeatures = mapState.map.querySourceFeatures(CURB_ZONES_SOURCE_ID, {
-						filter: [
-							'all',
-							['any', ['==', 'selectionOnly', true], ['==', 'innerLine', true]],
-							['==', 'curb_zone_id', zoneId]
-						]
-					});
-
-					if (selectionFeatures[0]) selectCurbZoneSegment(selectionFeatures[0]);
-				};
-				// Bind the click handler to both the visible 3-5 px line layer and the
-				// 12 px emphasis-outline layer above it, so users don't have to pixel-
-				// hunt to select a segment.
-				mapState.map.on('click', CURB_ZONES_LAYER_ID, onCurbZoneClick);
-				mapState.map.on('click', CURB_ZONES_EMPHASIS_OUTLINE_LAYER_ID, onCurbZoneClick);
-			} else {
-				existingSource.setData(nextData);
+		const onTileReady = (tileFC, tileBbox) => {
+			for (const f of tileFC.features) {
+				const id = f.properties?.curb_zone_id;
+				if (id) featuresByZoneId.set(id, f);
 			}
+			upsertCurbZoneSource({
+				type: 'FeatureCollection',
+				features: [...featuresByZoneId.values()]
+			});
+			pendingRectsByTile.set(tileKey(tileBbox), []);
+			renderLoadingRegion();
+		};
+
+		const result = await getCurbZonesByArea(min_lng, min_lat, max_lng, max_lat, day, time, {
+			gridSize: GRID_SIZE,
+			onTileReady
 		});
+
+		hideLoadingBbox();
 
 		const hashSelectedId = untrack(() => selectedCurbZoneState.id);
 		if (hashSelectedId) {
 			const fn = () => {
 				const selectedFeature = mapState.map.querySourceFeatures(CURB_ZONES_SOURCE_ID, {
-					filter: [
-						'all',
-						['any', ['==', 'selectionOnly', true], ['==', 'innerLine', true]],
-						['==', 'curb_zone_id', hashSelectedId]
-					]
+					filter: ['==', ['get', 'curb_zone_id'], hashSelectedId]
 				})?.[0];
 
 				if (selectedFeature) {
@@ -799,7 +526,7 @@
 			);
 		}
 		if (filters && mapState.map.getLayer(CURB_ZONES_SYMBOL_LAYER_ID)) {
-			mapState.map.setFilter(CURB_ZONES_SYMBOL_LAYER_ID, parkingSymbolFilter);
+			mapState.map.setFilter(CURB_ZONES_SYMBOL_LAYER_ID, parkingSymbolFilterExpression);
 			mapState.map.setLayoutProperty(
 				CURB_ZONES_SYMBOL_LAYER_ID,
 				'icon-image',
@@ -844,22 +571,21 @@
 	});
 
 	$effect(() => {
-		if (geocoderState?.results && !marker) {
-			const center = geocoderState.results;
-			marker = new mapboxgl.Marker({ color: '#58585b' }).setLngLat(center).addTo(mapState.map);
+		const center = geocoderState?.results;
+		if (center) {
+			// Reuse existing marker so picking a second/Nth search result also
+			// flies the map — the old guard only fired on first pick.
+			if (marker) marker.setLngLat(center);
+			else marker = new mapboxgl.Marker({ color: '#58585b' }).setLngLat(center).addTo(mapState.map);
 			mapState.map.flyTo({ center, zoom: 16 });
-		} else if (!geocoderState?.results && marker) {
+		} else if (marker) {
 			marker.remove();
 			marker = null;
 		}
 	});
 </script>
 
-<div id="map" class="Map">
-	{#if showNoZoneWarning}
-		<NoZonesModal onClose={() => (showNoZoneWarning = false)} />
-	{/if}
-</div>
+<div id="map" class="Map"></div>
 
 <style lang="scss">
 	.Map {

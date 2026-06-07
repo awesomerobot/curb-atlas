@@ -69,11 +69,24 @@
 		}
 	};
 
+	// Filter to Suffolk County. Mapbox sometimes tags historic neighborhoods
+	// (Roxbury, Dorchester, Brighton…) as their own `place` rather than as
+	// children of Boston, so a place=Boston filter drops them. The county
+	// covers every Boston neighborhood reliably — plus three small cities
+	// (Chelsea, Revere, Winthrop), but those are far less spurious than the
+	// random Hull / Brookline matches the loose maxBounds bbox lets through.
+	const isInBoston = (item) => {
+		const ctx = item?.context || [];
+		return ctx.some((c) => c?.id?.startsWith('district.') && c?.text === 'Suffolk County');
+	};
+
 	onMount(() => {
 		geocoder = new MapboxGeocoder({
 			accessToken: mapboxAccessToken,
 			mapboxgl: mapboxgl,
-			bbox: maxBounds
+			bbox: maxBounds,
+			countries: 'us',
+			filter: isInBoston
 		});
 
 		geocoder.addTo('#geocoder');

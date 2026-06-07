@@ -3,7 +3,7 @@
 	import length from '@turf/length';
 	import along from '@turf/along';
 
-	const { geometry } = $props();
+	const geometry = $derived(selectedCurbZoneState?.geometry);
 	const midpoint = $derived.by(() => {
 		if (!geometry) return null;
 
@@ -27,7 +27,9 @@
 	});
 </script>
 
-<a class="StreetView" href={streetViewUrl} target="_blank">Google Street View</a>
+{#if streetViewUrl}
+	<a class="StreetView" href={streetViewUrl} target="_blank" rel="noopener">Street view</a>
+{/if}
 
 <style lang="scss">
 	.StreetView {
@@ -36,6 +38,7 @@
 		color: var(--white);
 		border-radius: 0.5rem;
 		cursor: pointer;
+		text-decoration: none;
 
 		font-family: var(--primary-font);
 		font-size: var(--font-size-ms);
@@ -43,5 +46,13 @@
 		text-transform: uppercase;
 
 		white-space: nowrap;
+		// .bottom-row sets pointer-events: none so the map underneath stays
+		// clickable. Re-enable for the button itself (same trick MenuButton uses).
+		pointer-events: auto;
+
+		&:hover,
+		&:focus {
+			background-color: var(--optimistic-blue-hover);
+		}
 	}
 </style>

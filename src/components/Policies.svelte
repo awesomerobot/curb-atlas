@@ -1,6 +1,4 @@
 <script>
-	import { tick } from 'svelte';
-	import { calendarizePolicies } from '../utils/calendarize-policies';
 	import Calendar from './Calendar.svelte';
 
 	const { curbZoneId, policies, estimated = false } = $props();
@@ -13,6 +11,42 @@
 
 	const sortedPolicies = $derived(
 		JSON.parse(JSON.stringify(policies))?.sort((a, b) => a.priority - b.priority)
+	);
+
+	// The calendar is only meaningful when at least one rule has real schedule
+	// info; an unusable-image-only zone would render an empty grid below the
+	// title for no reason.
+	const hasSchedulableRules = $derived(
+		(policies || []).some((p) =>
+			(p.rules || []).some((r) => r?.activity && r.activity !== 'unusable image')
+		)
+	);
+
+	// Replace the city's literal "* Unusable Image" sentinel description with
+	// something more honest. The city writes multi-rule policies as a single
+	// description string with embedded "* " bullets — split those into a
+	// primary line + nested sub-rules so they render as proper bullets.
+	const describePolicy = (policy) => {
+		const rules = policy?.rules || [];
+		if (rules.length && rules.every((r) => r?.activity === 'unusable image')) {
+			return { main: 'No data available for this segment', subs: [] };
+		}
+		const raw = policy?.description ?? 'No policy description provided.';
+		const lines = raw
+			.split(/\r?\n/)
+			.map((l) => l.replace(/^\s*\*\s*/, '').trim())
+			.filter(Boolean);
+		return { main: lines[0] || '', subs: lines.slice(1) };
+	};
+
+	// The city publishes the same date across all policies on a zone in
+	// practice, so show the most-recent published_date once below the title
+	// rather than repeating it under each row.
+	const mostRecentUpdate = $derived(
+		(policies || [])
+			.map((p) => p?.published_date)
+			.filter(Boolean)
+			.reduce((max, d) => (max == null || d > max ? d : max), null)
 	);
 
 	// The city's policy descriptions ("* No Parking 8:00 AM-12:00 PM") drop the
@@ -77,41 +111,46 @@
 
 	{#if estimated}
 		<div class="estimated-banner">
-			Estimated from posted signage — the city's curb-zone pipeline could not
-			classify this segment, so policies below are derived from nearby sign
-			codes (BTD Sign Code Guide). Verify against the photos under "Posted
-			signage."
+			Estimated from signage inventory — verify against the photos under the
+			"Additional info" tab.
 		</div>
 	{/if}
 
 	<ul class="policies-list-container">
 		{#each sortedPolicies as policy}
+			{@const desc = describePolicy(policy)}
 			<li id={policy?.curb_policy_id}>
 				<div class="policy-container">
+					{#if summarizeDays(policy)}
+						<div class="policy-days">{summarizeDays(policy)}</div>
+					{/if}
 					<div
 						class={['policy-text', { highlighted: highlightedPolicyId === policy?.curb_policy_id }]}
 					>
-						{policy?.description ?? 'No policy description provided.'}
+						{desc.main}
 						{#if policy?.derived}<span class="derived-tag">estimated</span>{/if}
-						{#if summarizeDays(policy)}<div class="policy-days">{summarizeDays(policy)}</div>{/if}
+						{#if desc.subs.length}
+							<ul class="policy-subs">
+								{#each desc.subs as sub}<li>{sub}</li>{/each}
+							</ul>
+						{/if}
 					</div>
-					{#if policy?.published_date}
-						<div class="last-updated">
-							Last updated {getLastUpdatedString(policy?.published_date)}
-						</div>
-					{/if}
 				</div>
 			</li>
 		{/each}
 	</ul>
 
 	{#key curbZoneId}
-		{#if policies && policies.length}
-			<div class="title">Calendar</div>
-
-			<Calendar {policies} {setHighlightedPolicyId} />
+		{#if hasSchedulableRules}
+			<div class="calendar-wrap">
+				<Calendar {policies} {setHighlightedPolicyId} />
+			</div>
 		{/if}
 	{/key}
+
+	{#if mostRecentUpdate}
+		<div class="last-updated">Last updated {getLastUpdatedString(mostRecentUpdate)}</div>
+	{/if}
 </div>
 
 <style lang="scss">
@@ -128,11 +167,14 @@
 		text-transform: uppercase;
 	}
 
+	.calendar-wrap {
+		margin-top: 1.5rem;
+	}
+
 	.policy-container {
 		display: flex;
-		gap: 0.5rem;
-		align-items: start;
-		justify-content: space-between;
+		flex-direction: column;
+		gap: 0.15rem;
 		min-width: 300px;
 	}
 
@@ -146,9 +188,17 @@
 	}
 
 	.policy-days {
-		font-size: var(--font-size-s);
-		opacity: 0.75;
-		margin-top: 0.15rem;
+		font-size: var(--font-size-xs, 0.7rem);
+		opacity: 0.7;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		font-weight: var(--font-weight-bold);
+	}
+
+	.policy-subs {
+		list-style: disc outside;
+		padding-inline-start: 1rem;
+		margin-top: 0.25rem;
 	}
 
 	.estimated-banner {
@@ -176,7 +226,7 @@
 
 	.last-updated {
 		font-size: var(--font-size-s);
-		white-space: nowrap;
+		opacity: 0.7;
 	}
 
 	.policies-list-container {
@@ -184,17 +234,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
-		padding: 0;
-		margin-left: 1rem;
+		padding-inline-start: 1.25rem;
+		margin-left: 0;
 		max-height: 200px;
 		overflow: auto;
-
-		li {
-			padding-left: 0;
-		}
-
-		li::marker {
-			margin-left: 0;
-		}
+		list-style: disc outside;
 	}
 </style>

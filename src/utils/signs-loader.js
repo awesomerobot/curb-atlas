@@ -108,5 +108,9 @@ export const joinSignsToZones = ({ grid }, zoneCollection) => {
 	return byZoneId;
 };
 
-export const resolvePhotoUrl = (path, photoUrlPrefix) =>
+// Photo paths in signs.geojson are stored without their CDN prefix to keep
+// the file lean. Resolve back to the Cartegraph Azure blob URL.
+export const PHOTO_URL_PREFIX = 'https://cartegraphattachments.blob.core.windows.net/signattachments/';
+
+export const resolvePhotoUrl = (path, photoUrlPrefix = PHOTO_URL_PREFIX) =>
 	/^https?:\/\//.test(path) ? path : `${photoUrlPrefix}${path}`;
